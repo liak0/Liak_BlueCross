@@ -605,6 +605,32 @@ static inline bool ufshcd_is_valid_pm_lvl(int lvl)
 		return false;
 }
 
+static struct ufs_dev_fix ufs_fixups[] = {
+	/* UFS cards deviations table */
+	UFS_FIX(UFS_VENDOR_MICRON, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL, UFS_DEVICE_NO_VCCQ),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_RECOVERY_FROM_DL_NAC_ERRORS),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_NO_FASTAUTO),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_HOST_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, "THGLF2G9C8KBADG",
+		UFS_DEVICE_QUIRK_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, "THGLF2G9D8KBADG",
+		UFS_DEVICE_QUIRK_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_SKHYNIX, UFS_ANY_MODEL, UFS_DEVICE_NO_VCCQ),
+	UFS_FIX(UFS_VENDOR_SKHYNIX, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_HOST_PA_SAVECONFIGTIME),
+
+	END_FIX
+};
+
 static irqreturn_t ufshcd_intr(int irq, void *__hba);
 static irqreturn_t ufshcd_tmc_handler(struct ufs_hba *hba);
 static void ufshcd_async_scan(void *data, async_cookie_t cookie);
@@ -1781,6 +1807,7 @@ unblock_reqs:
 int ufshcd_hold(struct ufs_hba *hba, bool async)
 {
 	int rc = 0;
+	bool flush_result;
 	unsigned long flags;
 
 	if (!ufshcd_is_clkgating_allowed(hba))
@@ -1812,7 +1839,9 @@ start:
 				break;
 			}
 			spin_unlock_irqrestore(hba->host->host_lock, flags);
-			flush_work(&hba->clk_gating.ungate_work);
+			flush_result = flush_work(&hba->clk_gating.ungate_work);
+			if (hba->clk_gating.is_suspended && !flush_result)
+				goto out;
 			spin_lock_irqsave(hba->host->host_lock, flags);
 			goto start;
 		}
@@ -5813,12 +5842,20 @@ static int ufshcd_change_queue_depth(struct scsi_device *sdev, int depth)
  */
 static int ufshcd_slave_configure(struct scsi_device *sdev)
 {
+<<<<<<< HEAD
 	struct request_queue *q = sdev->request_queue;
 	struct ufs_hba *hba = shost_priv(sdev->host);
+=======
+	u32 intr_status, enabled_intr_status = 0;
+	irqreturn_t retval = IRQ_NONE;
+	struct ufs_hba *hba = __hba;
+	int retries = hba->nutrs;
+>>>>>>> 94570581ccff9dd63eca077a929b4ae86f89cb1b
 
 	blk_queue_update_dma_pad(q, PRDT_DATA_BYTE_COUNT_PAD - 1);
 	blk_queue_max_segment_size(q, PRDT_DATA_BYTE_COUNT_MAX);
 
+<<<<<<< HEAD
 	if (hba->scsi_cmd_timeout) {
 		blk_queue_rq_timeout(q, hba->scsi_cmd_timeout * HZ);
 		scsi_set_cmd_timeout_override(sdev, hba->scsi_cmd_timeout * HZ);
@@ -5826,6 +5863,26 @@ static int ufshcd_slave_configure(struct scsi_device *sdev)
 
 	sdev->autosuspend_delay = UFSHCD_AUTO_SUSPEND_DELAY_MS;
 	sdev->use_rpm_auto = 1;
+=======
+	/*
+	 * There could be max of hba->nutrs reqs in flight and in worst case
+	 * if the reqs get finished 1 by 1 after the interrupt status is
+	 * read, make sure we handle them by checking the interrupt status
+	 * again in a loop until we process all of the reqs before returning.
+	 */
+	while (intr_status && retries--) {
+		enabled_intr_status =
+			intr_status & ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
+		if (intr_status)
+			ufshcd_writel(hba, intr_status, REG_INTERRUPT_STATUS);
+		if (enabled_intr_status) {
+			ufshcd_sl_intr(hba, enabled_intr_status);
+			retval = IRQ_HANDLED;
+		}
+
+		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
+	}
+>>>>>>> 94570581ccff9dd63eca077a929b4ae86f89cb1b
 
 	if (sdev->lun < UFS_UPIU_MAX_GENERAL_LUN)
 		hba->sdev_ufs_lu[sdev->lun] = sdev;
@@ -8190,6 +8247,7 @@ static void ufshcd_apply_pm_quirks(struct ufs_hba *hba)
  */
 static int ufshcd_set_dev_ref_clk(struct ufs_hba *hba)
 {
+<<<<<<< HEAD
 	int err = 0;
 	int ref_clk = -1;
 	static const char * const ref_clk_freqs[] = {"19.2 MHz", "26 MHz",
@@ -8209,6 +8267,33 @@ static int ufshcd_set_dev_ref_clk(struct ufs_hba *hba)
 			 __func__, ref_clk);
 		err = -EINVAL;
 		goto out;
+=======
+	struct Scsi_Host *host;
+	struct ufs_hba *hba;
+	u32 pos;
+	int err;
+	u8 resp = 0xF, lun;
+	unsigned long flags;
+
+	host = cmd->device->host;
+	hba = shost_priv(host);
+
+	lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
+	err = ufshcd_issue_tm_cmd(hba, lun, 0, UFS_LOGICAL_RESET, &resp);
+	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
+		if (!err)
+			err = resp;
+		goto out;
+	}
+
+	/* clear the commands that were pending for corresponding LUN */
+	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
+		if (hba->lrb[pos].lun == lun) {
+			err = ufshcd_clear_cmd(hba, pos);
+			if (err)
+				break;
+		}
+>>>>>>> 94570581ccff9dd63eca077a929b4ae86f89cb1b
 	}
 
 	if (ref_clk == hba->dev_ref_clk_freq)
@@ -10874,6 +10959,69 @@ int ufshcd_shutdown(struct ufs_hba *hba)
 
 	if (ufshcd_is_ufs_dev_poweroff(hba) && ufshcd_is_link_off(hba))
 		goto out;
+<<<<<<< HEAD
+=======
+
+	pm_runtime_get_sync(hba->dev);
+
+	ret = ufshcd_suspend(hba, UFS_SHUTDOWN_PM);
+out:
+	if (ret)
+		dev_err(hba->dev, "%s failed, err %d\n", __func__, ret);
+	/* allow force shutdown even in case of errors */
+	return 0;
+}
+EXPORT_SYMBOL(ufshcd_shutdown);
+
+/*
+ * Values permitted 0, 1, 2.
+ * 0 -> Disable IO latency histograms (default)
+ * 1 -> Enable IO latency histograms
+ * 2 -> Zero out IO latency histograms
+ */
+static ssize_t
+latency_hist_store(struct device *dev, struct device_attribute *attr,
+		   const char *buf, size_t count)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	long value;
+
+	if (kstrtol(buf, 0, &value))
+		return -EINVAL;
+	if (value == BLK_IO_LAT_HIST_ZERO) {
+		memset(&hba->io_lat_read, 0, sizeof(hba->io_lat_read));
+		memset(&hba->io_lat_write, 0, sizeof(hba->io_lat_write));
+	} else if (value == BLK_IO_LAT_HIST_ENABLE ||
+		 value == BLK_IO_LAT_HIST_DISABLE)
+		hba->latency_hist_enabled = value;
+	return count;
+}
+
+ssize_t
+latency_hist_show(struct device *dev, struct device_attribute *attr,
+		  char *buf)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	size_t written_bytes;
+
+	written_bytes = blk_latency_hist_show("Read", &hba->io_lat_read,
+			buf, PAGE_SIZE);
+	written_bytes += blk_latency_hist_show("Write", &hba->io_lat_write,
+			buf + written_bytes, PAGE_SIZE - written_bytes);
+
+	return written_bytes;
+}
+
+static DEVICE_ATTR(latency_hist, S_IRUGO | S_IWUSR,
+		   latency_hist_show, latency_hist_store);
+
+static void
+ufshcd_init_latency_hist(struct ufs_hba *hba)
+{
+	if (device_create_file(hba->dev, &dev_attr_latency_hist))
+		dev_err(hba->dev, "Failed to create latency_hist sysfs entry\n");
+}
+>>>>>>> 94570581ccff9dd63eca077a929b4ae86f89cb1b
 
 	pm_runtime_get_sync(hba->dev);
 	ufshcd_hold_all(hba);
