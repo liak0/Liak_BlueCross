@@ -326,7 +326,8 @@ cmd_mkdtimg = mkdtimg cfg_create $@ $<
 # ---------------------------------------------------------------------------
 # Concatentate multiple files together
 quiet_cmd_cat = CAT     $@
-cmd_cat = (cat $(filter-out FORCE,$^) > $@) || (rm -f $@; false)
+cmd_mkdtimg = python2 $(srctree)/scripts/ufdt/libufdt/utils/src/mkdtboimg.py create $@ --page_size=4096 $(filter-out FORCE,$^)
+
 
 # Bzip2
 # ---------------------------------------------------------------------------
