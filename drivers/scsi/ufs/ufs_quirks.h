@@ -128,6 +128,14 @@ struct ufs_card_fix {
 #define UFS_DEVICE_NO_FASTAUTO		(1 << 5)
 
 /*
+ *  * It seems some UFS devices may keep drawing more than sleep current
+ *   * (atleast for 500us) from UFS rails (especially from VCCQ rail).
+ *    * To avoid this situation, add 2ms delay before putting these UFS
+ *     * rails in LPM mode.
+ *      */
+#define UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM	(1 << 6)
+
+/*
  * Some UFS devices require host PA_TACTIVATE to be lower than device
  * PA_TACTIVATE, enabling this quirk ensure this.
  */
@@ -151,6 +159,16 @@ struct ufs_card_fix {
  */
 #define UFS_DEVICE_QUIRK_HS_G1_TO_HS_G3_SWITCH (1 << 8)
 
+
+/**
+ *  * ufs_dev_fix - ufs device quirk info
+ *   * @card: ufs card details
+ *    * @quirk: device quirk
+ *     */
+struct ufs_dev_fix {
+		struct ufs_dev_desc card;
+			unsigned int quirk;
+};
 
 struct ufs_hba;
 void ufs_advertise_fixup_device(struct ufs_hba *hba);

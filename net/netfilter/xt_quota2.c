@@ -91,25 +91,64 @@ static void quota2_work(struct work_struct *work)
 	kobject_uevent_env(quota_kobj, KOBJ_CHANGE, envp);
 }
 
-static void quota2_log(const struct net_device *in,
+
+#ifdef CONFIG_NETFILTER_XT_MATCH_QUOTA2_LOG
+static void quota2_log(unsigned int hooknum,
+		       const struct sk_buff *skb,
+		       const struct net_device *in,
 		       const struct net_device *out,
-		       struct  xt_quota_counter *q,
 		       const char *prefix)
 {
-	if (!prefix)
+	ulog_packet_msg_t *pm;
+	struct sk_buff *log_skb;
+	size_t size;
+	struct nlmsghdr *nlh;
+	if (!qlog_nl_event)
 		return;
-
-	strlcpy(q->last_prefix, prefix, QUOTA2_SYSFS_WORK_MAX_SIZE);
-
-	if (in)
-		strlcpy(q->last_iface, in->name, QUOTA2_SYSFS_WORK_MAX_SIZE);
-	else if (out)
-		strlcpy(q->last_iface, out->name, QUOTA2_SYSFS_WORK_MAX_SIZE);
+	size = NLMSG_SPACE(sizeof(*pm));
+	size = max(size, (size_t)NLMSG_GOODSIZE);
+	log_skb = alloc_skb(size, GFP_ATOMIC);
+	if (!log_skb) {
+		pr_err("xt_quota2: cannot alloc skb for logging\n");
+		return;
+	}
+	nlh = nlmsg_put(log_skb, /*pid*/0, /*seq*/0, qlog_nl_event,
+			sizeof(*pm), 0);
+	if (!nlh) {
+		pr_err("xt_quota2: nlmsg_put failed\n");
+		kfree_skb(log_skb);
+		return;
+	}
+	pm = nlmsg_data(nlh);
+	if (skb->tstamp.tv64 == 0)
+		__net_timestamp((struct sk_buff *)skb);
+	pm->data_len = 0;
+	pm->hook = hooknum;
+	if (prefix != NULL)
+		strlcpy(pm->prefix, prefix, sizeof(pm->prefix));
 	else
-		strlcpy(q->last_iface, "UNKNOWN", QUOTA2_SYSFS_WORK_MAX_SIZE);
-
-	schedule_work(&q->work);
+		*(pm->prefix) = '\0';
+	if (in)
+		strlcpy(pm->indev_name, in->name, sizeof(pm->indev_name));
+	else
+		pm->indev_name[0] = '\0';
+	if (out)
+		strlcpy(pm->outdev_name, out->name, sizeof(pm->outdev_name));
+	else
+		pm->outdev_name[0] = '\0';
+	NETLINK_CB(log_skb).dst_group = 1;
+	pr_debug("throwing 1 packets to netlink group 1\n");
+	netlink_broadcast(nflognl, log_skb, 0, 1, GFP_ATOMIC);
 }
+#else
+static void quota2_log(unsigned int hooknum,
+		       const struct sk_buff *skb,
+		       const struct net_device *in,
+		       const struct net_device *out,
+		       const char *prefix)
+{
+}
+#endif  /* if+else CONFIG_NETFILTER_XT_MATCH_QUOTA2_LOG */
 
 static ssize_t quota_proc_read(struct file *file, char __user *buf,
 			   size_t size, loff_t *ppos)
@@ -297,13 +336,9 @@ quota_mt2(const struct sk_buff *skb, struct xt_action_param *par)
 		ret = true; /* note: does not respect inversion (bug??) */
 	} else {
 		if (e->quota > charge) {
-			if (!no_change)
-				e->quota -= charge;
-			ret = !ret;
-			/* Send kernel uevent if quota is 0 */
-			if (e->quota == 0) {
-				quota2_log(par->in, par->out, e, q->name);
-			}
+		if (!no_change)
+			e->quota -= charge;
+		ret = !ret;
 		} else if (e->quota) {
 			/* We are transitioning, log that fact. */
 			quota2_log(par->hooknum,

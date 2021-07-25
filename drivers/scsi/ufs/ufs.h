@@ -554,4 +554,16 @@ struct ufs_dev_info {
 	ktime_t health_cached_time;
 };
 
+#define MAX_MODEL_LEN 16
+/**
+ *  * ufs_dev_desc - ufs device details from the device descriptor
+ *   *
+ *    * @wmanufacturerid: card details
+ *     * @model: card model
+ *      */
+struct ufs_dev_desc {
+		u16 wmanufacturerid;
+			char model[MAX_MODEL_LEN + 1];
+};
+
 #endif /* End of Header */
