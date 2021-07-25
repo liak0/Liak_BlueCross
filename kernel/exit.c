@@ -790,9 +790,6 @@ void __noreturn do_exit(long code)
 	 * leave this task alone and wait for reboot.
 	 */
 	if (unlikely(tsk->flags & PF_EXITING)) {
-#ifdef CONFIG_PANIC_ON_RECURSIVE_FAULT
-		panic("Recursive fault!\n");
-#else
 		pr_alert("Fixing recursive fault but reboot is needed!\n");
 		futex_exit_recursive(tsk);
 		set_current_state(TASK_UNINTERRUPTIBLE);
