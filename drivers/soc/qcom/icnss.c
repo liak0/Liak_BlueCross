@@ -196,6 +196,8 @@ enum icnss_driver_event_type {
 	ICNSS_DRIVER_EVENT_UNREGISTER_DRIVER,
 	ICNSS_DRIVER_EVENT_PD_SERVICE_DOWN,
 	ICNSS_DRIVER_EVENT_FW_EARLY_CRASH_IND,
+	ICNSS_DRIVER_EVENT_IDLE_SHUTDOWN,
+	ICNSS_DRIVER_EVENT_IDLE_RESTART,
 	ICNSS_DRIVER_EVENT_MAX,
 };
 
@@ -284,6 +286,11 @@ enum icnss_driver_state {
 	ICNSS_HOST_TRIGGERED_PDR,
 	ICNSS_FW_DOWN,
 	ICNSS_DRIVER_UNLOADING,
+	ICNSS_REJUVENATE,
+	ICNSS_BLOCK_SHUTDOWN,
+	ICNSS_PDR,
+	ICNSS_MODEM_CRASHED,
+
 };
 
 struct ce_irq_list {
@@ -473,6 +480,7 @@ static struct icnss_priv {
 	struct mutex dev_lock;
 	uint32_t fw_error_fatal_irq;
 	uint32_t fw_early_crash_irq;
+	struct completion unblock_shutdown;
 } *penv;
 
 #ifdef CONFIG_ICNSS_DEBUG
@@ -616,6 +624,10 @@ static char *icnss_driver_event_to_str(enum icnss_driver_event_type type)
 		return "FW_EARLY_CRASH_IND";
 	case ICNSS_DRIVER_EVENT_MAX:
 		return "EVENT_MAX";
+	case ICNSS_DRIVER_EVENT_IDLE_SHUTDOWN:
+		return "IDLE_SHUTDOWN";
+	case ICNSS_DRIVER_EVENT_IDLE_RESTART:
+		return "IDLE_RESTART";
 	}
 
 	return "UNKNOWN";
@@ -1172,6 +1184,81 @@ bool icnss_is_fw_down(void)
 }
 EXPORT_SYMBOL(icnss_is_fw_down);
 
+bool icnss_is_pdr(void)
+{
+	if (!penv)
+		return false;
+	else
+		return test_bit(ICNSS_PDR, &penv->state);
+}
+EXPORT_SYMBOL(icnss_is_pdr);
+
+void icnss_block_shutdown(bool status)
+{
+	if (!penv)
+		return;
+
+	if (status) {
+		set_bit(ICNSS_BLOCK_SHUTDOWN, &penv->state);
+		reinit_completion(&penv->unblock_shutdown);
+	} else {
+		clear_bit(ICNSS_BLOCK_SHUTDOWN, &penv->state);
+		complete(&penv->unblock_shutdown);
+	}
+}
+EXPORT_SYMBOL(icnss_block_shutdown);
+
+int icnss_idle_shutdown(struct device *dev)
+{
+	struct icnss_priv *priv = dev_get_drvdata(dev);
+
+	if (!priv) {
+		icnss_pr_err("Invalid drvdata: dev %pK", dev);
+		return -EINVAL;
+	}
+
+	if (test_bit(ICNSS_MODEM_CRASHED, &priv->state) ||
+			test_bit(ICNSS_PDR, &priv->state) ||
+			test_bit(ICNSS_REJUVENATE, &penv->state)) {
+		icnss_pr_err("SSR/PDR is already in-progress during idle shutdown\n");
+		return -EBUSY;
+	}
+
+	return icnss_driver_event_post(ICNSS_DRIVER_EVENT_IDLE_SHUTDOWN,
+					ICNSS_EVENT_SYNC_UNINTERRUPTIBLE, NULL);
+}
+EXPORT_SYMBOL(icnss_idle_shutdown);
+
+int icnss_idle_restart(struct device *dev)
+{
+	struct icnss_priv *priv = dev_get_drvdata(dev);
+
+	if (!priv) {
+		icnss_pr_err("Invalid drvdata: dev %pK", dev);
+		return -EINVAL;
+	}
+
+	if (test_bit(ICNSS_MODEM_CRASHED, &priv->state) ||
+			test_bit(ICNSS_PDR, &priv->state) ||
+			test_bit(ICNSS_REJUVENATE, &penv->state)) {
+		icnss_pr_err("SSR/PDR is already in-progress during idle restart\n");
+		return -EBUSY;
+	}
+
+	return icnss_driver_event_post(ICNSS_DRIVER_EVENT_IDLE_RESTART,
+					ICNSS_EVENT_SYNC_UNINTERRUPTIBLE, NULL);
+}
+EXPORT_SYMBOL(icnss_idle_restart);
+
+
+bool icnss_is_rejuvenate(void)
+{
+	if (!penv)
+		return false;
+	else
+		return test_bit(ICNSS_REJUVENATE, &penv->state);
+}
+EXPORT_SYMBOL(icnss_is_rejuvenate);
 
 int icnss_power_off(struct device *dev)
 {
@@ -2668,7 +2755,6 @@ static int icnss_modem_notifier_nb(struct notifier_block *nb,
 
 	if (code != SUBSYS_BEFORE_SHUTDOWN)
 		return NOTIFY_OK;
-
 	if (test_bit(ICNSS_PDR_REGISTERED, &priv->state)) {
 		set_bit(ICNSS_FW_DOWN, &priv->state);
 		icnss_ignore_qmi_timeout(true);
@@ -4012,6 +4098,17 @@ static int icnss_stats_show_state(struct seq_file *s, struct icnss_priv *priv)
 			continue;
 		case ICNSS_DRIVER_UNLOADING:
 			seq_puts(s, "DRIVER UNLOADING");
+			continue;
+		case ICNSS_REJUVENATE:
+			seq_puts(s, "FW REJUVENATE");
+			continue;
+		case ICNSS_BLOCK_SHUTDOWN:
+			seq_puts(s, "BLOCK SHUTDOWN");
+			continue;
+		case ICNSS_PDR:
+			seq_puts(s, "PDR TRIGGERED");
+		case ICNSS_MODEM_CRASHED:
+			seq_puts(s, "MODEM CRASHED");
 		}
 
 		seq_printf(s, "UNKNOWN-%d", i);
