@@ -737,10 +737,18 @@ DISABLE_SCS	:= -fno-sanitize=shadow-call-stack
 export DISABLE_SCS
 endif
 
-ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS   += -Os
+ifeq ($(CONFIG_CC_OPTIMIZE_FOR_SIZE), y)
+	KBUILD_CFLAGS   += -Os
+	KBUILD_AFLAGS   += -Os
+	KBUILD_LDFLAGS  += -Os
+else ifeq ($(cc-name),clang)
+	KBUILD_CFLAGS   += -O3
+	KBUILD_AFLAGS   += -O3
+	KBUILD_LDFLAGS  += -O3
 else
-KBUILD_CFLAGS   += -O2
+	KBUILD_CFLAGS   += -O2
+	KBUILD_AFLAGS   += -O2
+	KBUILD_LDFLAGS  += -O2
 endif
 
 # Enable Clang Polly optimizations
